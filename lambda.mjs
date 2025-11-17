@@ -25,6 +25,9 @@ const slackClient = new WebClient(SLACK_BOT_TOKEN);
 const jiraAuthHeader =
   `Basic ${Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString("base64")}`;
 
+// In-memory cache to prevent duplicate event processing
+// Key format: channel_timestamp_event_ts
+const processedEvents = new Set();
 
 const logAndSendResponse = (response) => {
   console.log("Sending a response -")
@@ -95,47 +98,26 @@ async function getParentMessageIfThreadReply(evt) {
   return null;
 }
 
-
-export const handler = async (event) => {
+/**
+ * Process the Slack event asynchronously after acknowledging receipt
+ */
+async function processEventAsync(slackEvent, body, channel, ts, currentEventText) {
   try {
-    const body =
-      typeof event.body === "string" ? JSON.parse(event.body) : event.body;
-      // console.log("Event Block (expanded):", JSON.stringify(body, null, 2));
-
-
-    // Slack challenge (required one time when enabling Events API)
-    if (body?.type === "url_verification") {
-      return logAndSendResponse({
-        statusCode: 200,
-        headers: { "Content-Type": "text/plain" },
-        body: body.challenge,
-      });
-    }
-
-    const slackEvent = body?.event ?? body;
-    
     // Check if this is a thread reply and fetch parent message if needed
     const parentMessage = await getParentMessageIfThreadReply(slackEvent);
-    
-    const currentEventText = getCleanSlackText(slackEvent);
-    const channel = slackEvent.channel;
-    const ts = slackEvent.ts;
-
-    // Check current event for "create a ticket" to determine if we should proceed
-    if (!currentEventText.toLowerCase().includes('create a ticket')) {
-      return logAndSendResponse({ statusCode: 201, body: "No operations requried" })
-    }
     
     // Use parent message text if it exists, otherwise use current event text
     const text = parentMessage ? getCleanSlackText(parentMessage) : currentEventText;
 
     if (body?.type === 'event_callback' && body.event?.type && body.event.type !== 'app_mention') {
       // Not an app_mention - ignore
-      return logAndSendResponse({ statusCode: 200, body: 'Ignored non-app_mention event' });
+      console.log('Ignored non-app_mention event');
+      return;
     }
 
     if (!channel || !ts) {
-      return logAndSendResponse({ statusCode: 400, body: "Missing channel or ts" })
+      console.error("Missing channel or ts");
+      return;
     }
 
     // Always reply in the thread of the original message
@@ -199,10 +181,7 @@ ${slackPermalink}`;
 
     if (!jiraResp.ok) {
       console.error("Jira error:", jiraJson);
-      return logAndSendResponse({
-        statusCode: 500,
-        body: `Failed to create Jira issue: ${JSON.stringify(jiraJson)}`,
-      });
+      return;
     }
 
     const issueKey = jiraJson.key;
@@ -328,10 +307,76 @@ ${slackPermalink}`;
       }),
     });
 
-    return logAndSendResponse({
-      statusCode: 200,
-      body: JSON.stringify({ ok: true, issueKey }),
+    console.log(`Successfully created Jira issue: ${issueKey}`);
+  } catch (err) {
+    console.error("Error processing event asynchronously:", err);
+  }
+}
+
+export const handler = async (event) => {
+  try {
+    const body =
+      typeof event.body === "string" ? JSON.parse(event.body) : event.body;
+
+    // Slack challenge (required one time when enabling Events API)
+    if (body?.type === "url_verification") {
+      return logAndSendResponse({
+        statusCode: 200,
+        headers: { "Content-Type": "text/plain" },
+        body: body.challenge,
+      });
+    }
+
+    const slackEvent = body?.event ?? body;
+    
+    // Deduplication: Check if we've already processed this event
+    // Use channel + timestamp + event_ts to create unique key
+    const eventKey = `${slackEvent.channel}_${slackEvent.ts}_${body.event_ts || slackEvent.event_ts || slackEvent.ts}`;
+    
+    if (processedEvents.has(eventKey)) {
+      console.log("Duplicate event detected, skipping:", eventKey);
+      return logAndSendResponse({ 
+        statusCode: 200, 
+        body: JSON.stringify({ ok: true, message: "Event already processed" }) 
+      });
+    }
+    
+    // Mark event as processed
+    processedEvents.add(eventKey);
+    
+    // Clean up old entries periodically (keep last 1000 events)
+    if (processedEvents.size > 1000) {
+      const firstKey = processedEvents.values().next().value;
+      processedEvents.delete(firstKey);
+    }
+    
+    // CRITICAL: Respond to Slack immediately to prevent retries
+    // Slack expects a response within 3 seconds, otherwise it retries the event
+    // Process everything asynchronously after responding
+    const channel = slackEvent.channel;
+    const ts = slackEvent.ts;
+    const currentEventText = getCleanSlackText(slackEvent);
+    
+    // Quick validation - if no "create a ticket", respond immediately
+    if (!currentEventText.toLowerCase().includes('create a ticket')) {
+      return logAndSendResponse({ 
+        statusCode: 200, 
+        body: JSON.stringify({ ok: true, message: "No operations required" }) 
+      });
+    }
+    
+    // Send immediate acknowledgment to Slack (within 3 seconds)
+    const response = logAndSendResponse({ 
+      statusCode: 200, 
+      body: JSON.stringify({ ok: true, message: "Event received, processing..." }) 
     });
+    
+    // Process everything asynchronously (don't await - this prevents Slack retries)
+    processEventAsync(slackEvent, body, channel, ts, currentEventText).catch(err => {
+      console.error("Error processing event asynchronously:", err);
+    });
+    
+    return response;
   } catch (err) {
     console.error("Lambda error:", err);
     return logAndSendResponse({

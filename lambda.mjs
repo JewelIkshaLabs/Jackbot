@@ -1,6 +1,12 @@
 // index.mjs
 import fetch from 'node-fetch';
 import { WebClient } from "@slack/web-api";
+import dotenv from "dotenv";
+
+// Load environment variables from .env file (only in local development, not in Lambda)
+if (typeof process.env.AWS_LAMBDA_FUNCTION_NAME === 'undefined') {
+  dotenv.config();
+}
 
 // Jira config
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
@@ -201,6 +207,111 @@ ${slackPermalink}`;
 
     const issueKey = jiraJson.key;
     const issueUrl = `${JIRA_BASE_URL}/browse/${issueKey}`;
+
+    // 3.5️⃣ Handle Slack file attachments
+    // Collect files from both current event and parent message (if thread reply)
+    const slackFiles = [];
+    if (slackEvent.files && slackEvent.files.length > 0) {
+      slackFiles.push(...slackEvent.files);
+    }
+    if (parentMessage && parentMessage.files && parentMessage.files.length > 0) {
+      slackFiles.push(...parentMessage.files);
+    }
+    
+    if (slackFiles.length > 0) {
+      console.log("Found Slack attachments:", slackFiles.map(f => ({ name: f.name, mimetype: f.mimetype, size: f.size })));
+      
+      for (const file of slackFiles) {
+        try {
+          if (!file.id) {
+            console.error(`Downloading Slack file failed: File ${file.name || 'unnamed'} missing file ID`);
+            continue;
+          }
+          
+          // Get file info from Slack API to get download URL
+          const fileInfo = await slackClient.files.info({
+            file: file.id
+          });
+          
+          if (!fileInfo.file) {
+            console.error(`Downloading Slack file failed: No file info returned for ${file.name || 'unnamed'}`);
+            continue;
+          }
+          
+          // Get the download URL from file info
+          const downloadUrl = fileInfo.file.url_private_download || fileInfo.file.url_private;
+          if (!downloadUrl) {
+            console.error(`Downloading Slack file failed: No download URL for ${file.name || 'unnamed'}`);
+            continue;
+          }
+          
+          // Download file from Slack
+          const fileResponse = await fetch(downloadUrl, {
+            headers: { 
+              Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+            }
+          });
+          
+          if (!fileResponse.ok) {
+            const errorDetails = `${fileResponse.status} ${fileResponse.statusText}`;
+            console.error(`Downloading Slack file failed: ${errorDetails} for file ${file.name || 'unnamed'}`);
+            continue;
+          }
+          
+          // Read file as buffer
+          const arrayBuffer = await fileResponse.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          const fileContentType = fileResponse.headers.get('content-type') || file.mimetype || 'application/octet-stream';
+          
+          if (buffer.length === 0) {
+            console.error(`Downloading Slack file failed: File ${file.name || 'unnamed'} is empty`);
+            continue;
+          }
+          
+          // Upload to Jira using multipart/form-data
+          const boundary = `----JiraFormBoundary${Date.now()}${Math.random().toString(36).substring(2, 9)}`;
+          const CRLF = '\r\n';
+          const filename = file.name || 'attachment';
+          
+          // Build multipart body
+          const parts = [];
+          parts.push(Buffer.from(`--${boundary}${CRLF}`, 'ascii'));
+          parts.push(Buffer.from(`Content-Disposition: form-data; name="file"; filename="${filename.replace(/"/g, '\\"')}"${CRLF}`, 'utf8'));
+          parts.push(Buffer.from(`Content-Type: ${fileContentType}${CRLF}`, 'utf8'));
+          parts.push(Buffer.from(CRLF, 'ascii'));
+          parts.push(buffer);
+          parts.push(Buffer.from(`${CRLF}--${boundary}--${CRLF}`, 'ascii'));
+          
+          const multipartBody = Buffer.concat(parts);
+          
+          const attachmentResponse = await fetch(
+            `${JIRA_BASE_URL}/rest/api/3/issue/${issueKey}/attachments`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: jiraAuthHeader,
+                "X-Atlassian-Token": "no-check",
+                "Content-Type": `multipart/form-data; boundary=${boundary}`,
+              },
+              body: multipartBody,
+            }
+          );
+          
+          if (!attachmentResponse.ok) {
+            const errorText = await attachmentResponse.text();
+            const errorDetails = `${attachmentResponse.status} ${attachmentResponse.statusText} - ${errorText}`;
+            console.error(`Uploading attachment to Jira failed: ${errorDetails} for file ${file.name || 'unnamed'}`);
+            continue;
+          }
+          
+          await attachmentResponse.json();
+          console.log(`Uploaded attachment to Jira: ${file.name || 'unnamed'}`);
+        } catch (error) {
+          const errorDetails = error.message || String(error);
+          console.error(`Failed to process attachment ${file.name || 'unnamed'}: ${errorDetails}`);
+        }
+      }
+    }
 
     // 4️⃣ Reply in Slack thread with the Jira link
     await fetch("https://slack.com/api/chat.postMessage", {

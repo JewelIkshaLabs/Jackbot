@@ -1,4 +1,4 @@
-# Slack to Jira Ticket Bot
+Jira-Slack Ticket Bot
 
 A serverless bot that automatically creates Jira tickets from Slack messages when users mention the bot with "create a ticket". Supports file attachments, thread replies, and parent message handling.
 

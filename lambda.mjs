@@ -2,6 +2,8 @@
 import fetch from 'node-fetch';
 import { WebClient } from "@slack/web-api";
 import dotenv from "dotenv";
+import OpenAI from "openai";
+import { OPENAI_PROMPT } from "./constant.js";
 
 // Load environment variables from .env file (only in local development, not in Lambda)
 if (typeof process.env.AWS_LAMBDA_FUNCTION_NAME === 'undefined') {
@@ -22,6 +24,10 @@ const JIRA_LABELS = process.env.JIRA_LABELS ? process.env.JIRA_LABELS.split(',')
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const slackClient = new WebClient(SLACK_BOT_TOKEN);
 
+// OpenAI
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+
 const jiraAuthHeader =
   `Basic ${Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString("base64")}`;
 
@@ -35,21 +41,132 @@ const logAndSendResponse = (response) => {
   return response
 }
 
+
 /**
- * Convert a plain text string into a minimal Atlassian Document Format (ADF) object.
- * Splits input on newlines and converts each line into a paragraph node.
+ * Create an ADF document with a hyperlink to the Slack message.
+ * @param {string} summary - The summary text
+ * @param {string} originalText - The original Slack message text
+ * @param {string} slackPermalink - The Slack message permalink URL
+ * @returns {Object} ADF document object
  */
-function textToADF(text) {
-  const paragraphs = String(text || "").split(/\r?\n/);
-  const content = paragraphs.map((p) => {
-    // If paragraph is empty, keep an empty paragraph node
-    if (p.length === 0) {
-      return { type: "paragraph", content: [] };
+function createDescriptionADF(summary, originalText, slackPermalink) {
+  const content = [
+    {
+      type: "paragraph",
+      content: [
+        { type: "text", text: "Created automatically from Slack message." }
+      ]
+    },
+    {
+      type: "paragraph",
+      content: [
+        { type: "text", text: summary, marks: [{ type: "strong" }] }
+      ]
+    },
+    {
+      type: "paragraph",
+      content: [
+        { type: "text", text: "Original message:" }
+      ]
     }
-    // Otherwise, single text node inside paragraph
-    return { type: "paragraph", content: [{ type: "text", text: p }] };
+  ];
+
+  // Handle multi-line original text by splitting into paragraphs
+  const textLines = String(originalText || "").split(/\r?\n/);
+  textLines.forEach((line) => {
+    if (line.trim().length > 0) {
+      content.push({
+        type: "paragraph",
+        content: [{ type: "text", text: line }]
+      });
+    } else {
+      content.push({
+        type: "paragraph",
+        content: []
+      });
+    }
   });
+
+  // Add the Slack link
+  content.push(
+    {
+      type: "paragraph",
+      content: [
+        {
+          type: "text",
+          text: "View in Slack",
+          marks: [
+            {
+              type: "link",
+              attrs: {
+                href: slackPermalink
+              }
+            },
+            { type: "strong" }
+          ]
+        }
+      ]
+    }
+  );
+  
   return { type: "doc", version: 1, content };
+}
+
+/**
+ * Call OpenAI API to generate a concise Jira title and summary.
+ * @param {string} text - The Slack message text
+ * @returns {Promise<{title: string, summary: string}>} Object with title and summary
+ */
+async function generateJiraTicketContent(text) {
+  if (!openai) {
+    console.warn("OpenAI API key not configured, using fallback");
+    // Fallback: use truncated text as title and full text as summary
+    const title = text.length > 100 ? text.slice(0, 97) + "..." : text;
+    const summary = text;
+    return { title, summary };
+  }
+
+  try {
+    const prompt = OPENAI_PROMPT.replace("{text}", text);
+    
+    const response = await openai.chat.completions.create({
+      model: "gpt-5.1",
+      messages: [
+        {
+          role: "system",
+          content: "You are a helpful assistant that generates Jira ticket titles and summaries. Always respond with valid JSON only."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.3,
+      max_completion_tokens: 300
+    });
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("No content in OpenAI response");
+    }
+
+    const parsed = JSON.parse(content);
+    
+    // Validate and sanitize
+    const title = (parsed.title || text.slice(0, 100)).trim();
+    const summary = (parsed.summary || text).trim();
+    
+    // Ensure title doesn't exceed Jira's limit (255 chars, but we'll use 100 for conciseness)
+    const finalTitle = title.length > 100 ? title.slice(0, 97) + "..." : title;
+    
+    return { title: finalTitle, summary };
+  } catch (error) {
+    console.error("OpenAI API error:", error);
+    // Fallback: use truncated text as title and full text as summary
+    const title = text.length > 100 ? text.slice(0, 97) + "..." : text;
+    const summary = text;
+    return { title, summary };
+  }
 }
 
 function getCleanSlackText(event) {
@@ -138,24 +255,16 @@ async function processEventAsync(slackEvent, body, channel, ts, currentEventText
         ? permalinkJson.permalink
         : `https://slack.com/archives/${channel}/p${ts.replace(".", "")}`;
 
-    // 2️⃣ Prepare Jira issue payload WITH LABELS
-    const summary =
-      text.length > 120 ? text.slice(0, 117) + "..." : text;
+    // 2️⃣ Generate Jira ticket title and summary using OpenAI
+    const { title, summary } = await generateJiraTicketContent(text);
 
-    // build a plain description string (human readable) then convert to ADF
-    const descriptionPlain = `Created automatically from Slack message:
-
-${text}
-
-Slack Message Link:
-${slackPermalink}`;
-
-    const descriptionADF = textToADF(descriptionPlain);
+    // 3️⃣ Build description in ADF format with hyperlink
+    const descriptionADF = createDescriptionADF(summary, text, slackPermalink);
 
     const jiraPayload = {
       fields: {
         project: { key: JIRA_PROJECT_KEY },
-        summary,
+        summary: title,
         // IMPORTANT: description is an ADF object (not a plain string)
         description: descriptionADF,
         issuetype: { name: JIRA_ISSUE_TYPE },
@@ -163,7 +272,7 @@ ${slackPermalink}`;
       },
     };
 
-    // 3️⃣ Create Jira Issue
+    // 4️⃣ Create Jira Issue
     const jiraResp = await fetch(
       `${JIRA_BASE_URL}/rest/api/3/issue`,
       {
@@ -187,7 +296,7 @@ ${slackPermalink}`;
     const issueKey = jiraJson.key;
     const issueUrl = `${JIRA_BASE_URL}/browse/${issueKey}`;
 
-    // 3.5️⃣ Handle Slack file attachments
+    // 4.5️⃣ Handle Slack file attachments
     // Collect files from both current event and parent message (if thread reply)
     const slackFiles = [];
     if (slackEvent.files && slackEvent.files.length > 0) {
@@ -292,7 +401,7 @@ ${slackPermalink}`;
       }
     }
 
-    // 4️⃣ Reply in Slack thread with the Jira link
+    // 5️⃣ Reply in Slack thread with the Jira link
     await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
       headers: {

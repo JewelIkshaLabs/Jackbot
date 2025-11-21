@@ -175,12 +175,26 @@ export async function webhookHandler(req, res) {
         // Check if this is a thread reply and get parent message
         const parentMessage = await getParentMessageIfThreadReply(event);
         let messageToAnalyze = event.text;
+        let attachments = [];
         
         if (parentMessage) {
           console.log('   📧 Bot mentioned in thread - using parent message as context');
           // Use parent message as the main issue description
           messageToAnalyze = parentMessage.text;
           console.log(`   Parent message: ${messageToAnalyze.substring(0, 200)}...`);
+          // Get attachments from parent message
+          attachments = parentMessage.files || [];
+        } else {
+          // Get attachments from current message
+          attachments = event.files || [];
+        }
+        
+        // Log attachments if present
+        if (attachments.length > 0) {
+          console.log(`   📎 Found ${attachments.length} attachment(s):`);
+          attachments.forEach((file, idx) => {
+            console.log(`      ${idx + 1}. ${file.name} (${file.mimetype || 'unknown'}) - ${file.url_private || file.permalink}`);
+          });
         }
         
         // Extract issue description and GitHub repo from message
@@ -213,12 +227,12 @@ export async function webhookHandler(req, res) {
         if (!finalRepo) {
           // Reply to user that they need to provide a GitHub repo
           // This will be handled asynchronously
-          processSlackEvent(event, null, issueDescription).catch(err => {
+          processSlackEvent(event, null, issueDescription, attachments).catch(err => {
             console.error('Error processing event:', err);
           });
         } else {
           // Process the event asynchronously with both repo and issue
-          processSlackEvent(event, finalRepo, issueDescription).catch(err => {
+          processSlackEvent(event, finalRepo, issueDescription, attachments).catch(err => {
             console.error('Error processing event:', err);
           });
         }

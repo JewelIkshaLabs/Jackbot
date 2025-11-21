@@ -9,47 +9,104 @@ const JIRA_ISSUE_TYPE = process.env.JIRA_ISSUE_TYPE || 'Task';
 const jiraAuthHeader = `Basic ${Buffer.from(`${JIRA_USER}:${JIRA_API_TOKEN}`).toString('base64')}`;
 
 /**
- * Unescape markdown characters that the AI might have escaped
- */
-function unescapeMarkdown(text) {
-  if (!text) return text;
-  
-  return text
-    // Unescape backticks
-    .replace(/\\`/g, '`')
-    // Unescape asterisks
-    .replace(/\\\*/g, '*')
-    // Unescape underscores (but be careful not to break intentional escaping)
-    .replace(/\\_/g, '_')
-    // Unescape square brackets
-    .replace(/\\\[/g, '[')
-    .replace(/\\\]/g, ']')
-    // Unescape parentheses
-    .replace(/\\\(/g, '(')
-    .replace(/\\\)/g, ')')
-    // Unescape hash symbols
-    .replace(/\\#/g, '#')
-    // Unescape pipes
-    .replace(/\\\|/g, '|');
-}
-
-/**
- * Convert markdown text to Atlassian Document Format (ADF)
- * Supports: headings, bold, inline code, code blocks
+ * Convert Markdown to Atlassian Document Format (ADF)
+ * Supports: ## headings, **bold**, `inline code`, ```code blocks```, bullet lists, numbered lists
  */
 function textToADF(text) {
-  // First, unescape any escaped markdown
-  text = unescapeMarkdown(text);
+  if (!text) return { type: 'doc', version: 1, content: [] };
+  
   const content = [];
-  const lines = String(text || '').split(/\r?\n/);
+  const lines = String(text).split(/\r?\n/);
 
   let inCodeBlock = false;
   let codeBlockLang = '';
   let codeBlockContent = [];
+  let inBulletList = false;
+  let bulletItems = [];
+  let inNumberedList = false;
+  let numberedItems = [];
 
-  for (const line of lines) {
-    // Handle code blocks (```language or ```)
-    const codeBlockMatch = line.match(/^```(\w*)\s*$/);
+  const flushBulletList = () => {
+    if (bulletItems.length > 0) {
+      content.push({
+        type: 'bulletList',
+        content: bulletItems.map(item => ({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: item }]
+        }))
+      });
+      bulletItems = [];
+      inBulletList = false;
+    }
+  };
+
+  const flushNumberedList = () => {
+    if (numberedItems.length > 0) {
+      content.push({
+        type: 'orderedList',
+        content: numberedItems.map(item => ({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: item }]
+        }))
+      });
+      numberedItems = [];
+      inNumberedList = false;
+    }
+  };
+
+  const parseInlineFormatting = (text) => {
+    const result = [];
+    let remaining = text;
+    
+    // Parse **bold** and `inline code`
+    const regex = /(\*\*([^*]+?)\*\*)|(`([^`]+?)`)/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(remaining)) !== null) {
+      // Add text before match
+      if (match.index > lastIndex) {
+        result.push({
+          type: 'text',
+          text: remaining.substring(lastIndex, match.index)
+        });
+      }
+
+      if (match[2]) {
+        // Bold **...**
+        result.push({
+          type: 'text',
+          text: match[2],
+          marks: [{ type: 'strong' }]
+        });
+      } else if (match[4]) {
+        // Inline code `...`
+        result.push({
+          type: 'text',
+          text: match[4],
+          marks: [{ type: 'code' }]
+        });
+      }
+      lastIndex = regex.lastIndex;
+    }
+
+    // Add remaining text
+    if (lastIndex < remaining.length) {
+      result.push({
+        type: 'text',
+        text: remaining.substring(lastIndex)
+      });
+    }
+
+    return result.length > 0 ? result : [{ type: 'text', text: text }];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Handle code blocks ```language ... ```
+    const codeBlockMatch = line.match(/^```(\w*)?\s*$/);
+    
     if (codeBlockMatch) {
       if (inCodeBlock) {
         // End of code block
@@ -63,6 +120,8 @@ function textToADF(text) {
         codeBlockLang = '';
       } else {
         // Start of code block
+        flushBulletList();
+        flushNumberedList();
         inCodeBlock = true;
         codeBlockLang = codeBlockMatch[1] || 'plain';
       }
@@ -74,69 +133,62 @@ function textToADF(text) {
       continue;
     }
 
-    // Handle headings (## Heading)
-    const headingMatch = line.match(/^(#+)\s+(.*)$/);
+    // Handle markdown headings (## or ###)
+    const headingMatch = line.match(/^(#{2,3})\s+(.*)$/);
+    
     if (headingMatch) {
-      const level = Math.min(headingMatch[1].length, 6); // Max heading level 6
+      flushBulletList();
+      flushNumberedList();
+      const level = headingMatch[1].length;
+      const text = headingMatch[2];
       content.push({
         type: 'heading',
         attrs: { level: level },
-        content: [{ type: 'text', text: headingMatch[2].trim() }],
+        content: [{ type: 'text', text: text.trim() }],
       });
       continue;
     }
 
-    // Handle paragraphs with bold (**text**) and inline code (`code`)
-    const paragraphContent = [];
-    let remainingText = line;
-
-    // Regex to find bold (**text**) or inline code (`code`)
-    const regex = /(\*\*([^*]+?)\*\*)|(`([^`]+?)`)/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = regex.exec(remainingText)) !== null) {
-      // Add text before the match
-      if (match.index > lastIndex) {
-        paragraphContent.push({ 
-          type: 'text', 
-          text: remainingText.substring(lastIndex, match.index) 
-        });
-      }
-
-      if (match[2]) { 
-        // Bold match
-        paragraphContent.push({ 
-          type: 'text', 
-          text: match[2], 
-          marks: [{ type: 'strong' }] 
-        });
-      } else if (match[4]) { 
-        // Inline code match
-        paragraphContent.push({ 
-          type: 'text', 
-          text: match[4], 
-          marks: [{ type: 'code' }] 
-        });
-      }
-      lastIndex = regex.lastIndex;
+    // Handle bullet lists (- item)
+    const bulletMatch = line.match(/^-\s+(.*)$/);
+    if (bulletMatch) {
+      if (inNumberedList) flushNumberedList();
+      inBulletList = true;
+      bulletItems.push(parseInlineFormatting(bulletMatch[1]));
+      continue;
     }
 
-    // Add any remaining text after the last match
-    if (lastIndex < remainingText.length) {
-      paragraphContent.push({ 
-        type: 'text', 
-        text: remainingText.substring(lastIndex) 
-      });
+    // Handle numbered lists (1. item, 2. item, etc)
+    const numberedMatch = line.match(/^\d+\.\s+(.*)$/);
+    if (numberedMatch) {
+      if (inBulletList) flushBulletList();
+      inNumberedList = true;
+      numberedItems.push(parseInlineFormatting(numberedMatch[1]));
+      continue;
     }
 
-    if (paragraphContent.length > 0) {
-      content.push({ type: 'paragraph', content: paragraphContent });
-    } else if (line.length === 0) {
-      content.push({ type: 'paragraph', content: [] }); // Empty paragraph for blank lines
-    } else {
-      content.push({ type: 'paragraph', content: [{ type: 'text', text: line }] }); // Fallback
+    // Handle horizontal rule (---)
+    if (line.match(/^-{3,}$/)) {
+      flushBulletList();
+      flushNumberedList();
+      content.push({ type: 'rule' });
+      continue;
     }
+
+    // Empty line
+    if (line.trim().length === 0) {
+      // Flush lists on empty line
+      if (inBulletList) flushBulletList();
+      if (inNumberedList) flushNumberedList();
+      // Don't add empty paragraphs
+      continue;
+    }
+
+    // Regular paragraph with inline formatting
+    flushBulletList();
+    flushNumberedList();
+    const paragraphContent = parseInlineFormatting(line);
+    content.push({ type: 'paragraph', content: paragraphContent });
   }
 
   // Close any unclosed code block
@@ -147,6 +199,10 @@ function textToADF(text) {
       content: [{ type: 'text', text: codeBlockContent.join('\n') }],
     });
   }
+
+  // Flush any remaining lists
+  flushBulletList();
+  flushNumberedList();
 
   return { type: 'doc', version: 1, content };
 }

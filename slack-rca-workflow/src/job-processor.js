@@ -1,4 +1,4 @@
-import { createJiraTicket } from './jira-service.js';
+import { createJiraTicket, uploadAttachmentsToJira } from './jira-service.js';
 import { findRelevantFilesWithGrep } from './github-service.js';
 import { performRCA } from './rca-service.js';
 import { postJiraComment } from './jira-service.js';
@@ -9,7 +9,7 @@ const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
 /**
  * Process Slack event: Read issue, analyze repo, create Jira ticket, and run RCA analysis
  */
-export async function processSlackEvent(slackEvent, githubRepo, issueDescription) {
+export async function processSlackEvent(slackEvent, githubRepo, issueDescription, attachments = []) {
   const workflowId = `workflow-${Date.now()}`;
   const startTime = Date.now();
   
@@ -21,6 +21,7 @@ export async function processSlackEvent(slackEvent, githubRepo, issueDescription
   console.log(`💬 Slack Channel: ${slackEvent.channel}`);
   console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
   console.log(`📝 Full Message: ${slackEvent.text || ''}`);
+  console.log(`📎 Attachments: ${attachments.length}`);
   console.log('-'.repeat(80));
   
   try {
@@ -111,14 +112,23 @@ export async function processSlackEvent(slackEvent, githubRepo, issueDescription
     let issueKey = null;
     let issueUrl = null;
     try {
+      // Build description (attachments will be uploaded separately)
+      let description = `Issue: ${issueDescription}\n\nReported from Slack. Analyzing codebase for root cause analysis.`;
+      
+      if (attachments && attachments.length > 0) {
+        description += `\n\n**Attachments**: ${attachments.length} file(s) attached`;
+      }
+      
       const ticketResult = await createJiraTicket({
         summary: issueDescription.length > 200 
           ? issueDescription.substring(0, 197) + '...' 
           : issueDescription,
-        description: `Issue: ${issueDescription}\n\nReported from Slack. Analyzing codebase for root cause analysis.`,
+        description,
         githubRepo,
         issueDescription,
         slackMessage: messageText,
+        slackChannel: channel,
+        slackMessageTs: threadTs,
       }, workflowId);
       issueKey = ticketResult.key;
       issueUrl = ticketResult.url;
@@ -127,6 +137,16 @@ export async function processSlackEvent(slackEvent, githubRepo, issueDescription
       console.log(`   Ticket Key: ${issueKey}`);
       console.log(`   Ticket URL: ${issueUrl}`);
       console.log(`   Creation time: ${ticketTime}s`);
+      
+      // Upload attachments to Jira if present
+      if (attachments && attachments.length > 0) {
+        console.log(`\n   [${workflowId}] Uploading ${attachments.length} attachment(s) to Jira...`);
+        try {
+          await uploadAttachmentsToJira(issueKey, attachments, workflowId);
+        } catch (uploadError) {
+          console.warn(`   [${workflowId}] Failed to upload some attachments (non-blocking):`, uploadError.message);
+        }
+      }
     } catch (error) {
       const ticketTime = ((Date.now() - ticketStart) / 1000).toFixed(2);
       console.error(`❌ [${workflowId}] Jira ticket creation failed after ${ticketTime}s`);

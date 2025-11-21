@@ -1,6 +1,7 @@
 import { createJiraTicket, uploadAttachmentsToJira } from './jira-service.js';
 import { findRelevantFilesWithGrep } from './github-service.js';
 import { performRCA } from './rca-service.js';
+import { generateTestCases } from './test-cases-service.js';
 import { postJiraComment } from './jira-service.js';
 import { WebClient } from '@slack/web-api';
 
@@ -256,12 +257,93 @@ export async function processSlackEvent(slackEvent, githubRepo, issueDescription
       return;
     }
 
+    // Step 5: Generate test cases based on RCA analysis
+    console.log('\n' + '-'.repeat(80));
+    console.log(`🧪 [${workflowId}] STEP 5: Generating Test Cases`);
+    console.log('-'.repeat(80));
+    console.log(`   Issue: ${issueDescription}`);
+    console.log(`   Relevant files: ${relevantFiles.length}`);
+    console.log(`   OpenAI Model: ${process.env.OPENAI_MODEL || 'gpt-4-turbo-preview'}`);
+    console.log(`   Max iterations: 20`);
+    const testCasesStart = Date.now();
+    
+    let testCasesResult = null;
+    try {
+      testCasesResult = await generateTestCases({
+        rcaResult,
+        relevantFiles,
+        githubRepo,
+        issueDescription,
+      }, workflowId);
+      const testCasesTime = ((Date.now() - testCasesStart) / 1000).toFixed(2);
+      console.log(`✅ [${workflowId}] Test case generation completed`);
+      console.log(`   Generation time: ${testCasesTime}s`);
+      console.log(`   Test cases generated: ${testCasesResult.testCases.length}`);
+      console.log(`   Summary: ${testCasesResult.summary.substring(0, 100)}...`);
+    } catch (error) {
+      const testCasesTime = ((Date.now() - testCasesStart) / 1000).toFixed(2);
+      console.error(`❌ [${workflowId}] Test case generation failed after ${testCasesTime}s`);
+      console.error(`   Error: ${error.message}`);
+      console.error(`   Stack: ${error.stack}`);
+      try {
+        await slackClient.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          text: `⚠️ Test case generation failed: ${error.message}`,
+        });
+      } catch (slackError) {
+        console.warn(`   [${workflowId}] Failed to post Slack error message (non-blocking):`, slackError.message);
+      }
+      // Continue workflow even if test case generation fails
+      testCasesResult = null;
+    }
+
+    // Step 6: Post test cases to Jira ticket (if generated)
+    if (testCasesResult && testCasesResult.testCases.length > 0) {
+      console.log('\n' + '-'.repeat(80));
+      console.log(`📝 [${workflowId}] STEP 6: Posting Test Cases to Jira`);
+      console.log('-'.repeat(80));
+      console.log(`   Ticket: ${issueKey}`);
+      console.log(`   Test cases: ${testCasesResult.testCases.length}`);
+      const testCasesCommentStart = Date.now();
+      
+      try {
+        await postJiraComment(issueKey, {
+          text: testCasesResult.fullResponse,
+        }, workflowId);
+        const testCasesCommentTime = ((Date.now() - testCasesCommentStart) / 1000).toFixed(2);
+        console.log(`✅ [${workflowId}] Test cases posted to Jira`);
+        console.log(`   Ticket: ${issueKey}`);
+        console.log(`   Comment time: ${testCasesCommentTime}s`);
+      } catch (error) {
+        const testCasesCommentTime = ((Date.now() - testCasesCommentStart) / 1000).toFixed(2);
+        console.error(`❌ [${workflowId}] Failed to post test cases after ${testCasesCommentTime}s`);
+        console.error(`   Error: ${error.message}`);
+        console.error(`   Stack: ${error.stack}`);
+        try {
+          await slackClient.chat.postMessage({
+            channel,
+            thread_ts: threadTs,
+            text: `⚠️ Test cases generated but failed to post to Jira: ${error.message}`,
+          });
+        } catch (slackError) {
+          console.warn(`   [${workflowId}] Failed to post Slack error message (non-blocking):`, slackError.message);
+        }
+        // Continue workflow even if posting fails
+      }
+    } else {
+      console.log(`\n   [${workflowId}] ⚠️ No test cases generated, skipping Jira post`);
+    }
+
     // Final success message (non-blocking)
     try {
+      const testCasesInfo = testCasesResult && testCasesResult.testCases.length > 0 
+        ? `\n🧪 Generated ${testCasesResult.testCases.length} test cases`
+        : '';
       await slackClient.chat.postMessage({
         channel,
         thread_ts: threadTs,
-        text: `✅ RCA analysis completed and posted to <${issueUrl}|${issueKey}>`,
+        text: `✅ RCA analysis completed and posted to <${issueUrl}|${issueKey}>${testCasesInfo}`,
       });
     } catch (slackError) {
       console.warn(`   [${workflowId}] Failed to post Slack success message (non-blocking):`, slackError.message);

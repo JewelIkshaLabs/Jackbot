@@ -16,272 +16,6 @@ const openai = new OpenAI({
 });
 
 /**
- * Convert Markdown to Atlassian Document Format (ADF)
- * Supports: ## headings, **bold**, `inline code`, ```code blocks```, bullet lists, numbered lists
- * Convert markdown text to Atlassian Document Format (ADF)
- * Supports: headings, bold, inline code, code blocks, bullet lists
- */
-function textToADF(text) {
-  if (!text) return { type: 'doc', version: 1, content: [] };
-  
-  const content = [];
-  const lines = String(text).split(/\r?\n/);
-
-  let inCodeBlock = false;
-  let codeBlockLang = '';
-  let codeBlockContent = [];
-  let inBulletList = false;
-  let bulletItems = [];
-  let inNumberedList = false;
-  let numberedItems = [];
-
-  const flushBulletList = () => {
-    if (bulletItems.length > 0) {
-      content.push({
-        type: 'bulletList',
-        content: bulletItems.map(item => ({
-          type: 'listItem',
-          content: [{ type: 'paragraph', content: item }]
-        }))
-      });
-      bulletItems = [];
-      inBulletList = false;
-    }
-  };
-
-  const flushNumberedList = () => {
-    if (numberedItems.length > 0) {
-      content.push({
-        type: 'orderedList',
-        content: numberedItems.map(item => ({
-          type: 'listItem',
-          content: [{ type: 'paragraph', content: item }]
-        }))
-      });
-      numberedItems = [];
-      inNumberedList = false;
-    }
-  };
-
-  const parseInlineFormatting = (text) => {
-    const result = [];
-    let remaining = text;
-    
-    // Parse **bold** and `inline code`
-    const regex = /(\*\*([^*]+?)\*\*)|(`([^`]+?)`)/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = regex.exec(remaining)) !== null) {
-      // Add text before match
-      if (match.index > lastIndex) {
-        result.push({
-          type: 'text',
-          text: remaining.substring(lastIndex, match.index)
-        });
-      }
-
-      if (match[2]) {
-        // Bold **...**
-        result.push({
-          type: 'text',
-          text: match[2],
-          marks: [{ type: 'strong' }]
-        });
-      } else if (match[4]) {
-        // Inline code `...`
-        result.push({
-          type: 'text',
-          text: match[4],
-          marks: [{ type: 'code' }]
-        });
-      }
-      lastIndex = regex.lastIndex;
-    }
-
-    // Add remaining text
-    if (lastIndex < remaining.length) {
-      result.push({
-        type: 'text',
-        text: remaining.substring(lastIndex)
-      });
-    }
-
-    return result.length > 0 ? result : [{ type: 'text', text: text }];
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Handle code blocks ```language ... ```
-    const codeBlockMatch = line.match(/^```(\w*)?\s*$/);
-    
-  let bulletListItems = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    
-    // Handle code blocks (```language or ```)
-    const codeBlockMatch = line.match(/^```(\w*)\s*$/);
-    if (codeBlockMatch) {
-      // Close any open bullet list first
-      if (inBulletList) {
-        content.push({
-          type: 'bulletList',
-          content: bulletListItems,
-        });
-        bulletListItems = [];
-        inBulletList = false;
-      }
-      
-      if (inCodeBlock) {
-        // End of code block
-        content.push({
-          type: 'codeBlock',
-          attrs: { language: codeBlockLang || 'plain' },
-          content: [{ type: 'text', text: codeBlockContent.join('\n') }],
-        });
-        codeBlockContent = [];
-        inCodeBlock = false;
-        codeBlockLang = '';
-      } else {
-        // Start of code block
-        flushBulletList();
-        flushNumberedList();
-        inCodeBlock = true;
-        codeBlockLang = codeBlockMatch[1] || 'plain';
-      }
-      continue;
-    }
-
-    if (inCodeBlock) {
-      codeBlockContent.push(line);
-      continue;
-    }
-
-    // Handle markdown headings (## or ###)
-    const headingMatch = line.match(/^(#{2,3})\s+(.*)$/);
-    
-    // Handle bullet list items (lines starting with "- ")
-    const bulletMatch = line.match(/^-\s+(.*)$/);
-    if (bulletMatch) {
-      const itemText = bulletMatch[1].trim();
-      const itemContent = parseInlineFormatting(itemText);
-      
-      bulletListItems.push({
-        type: 'listItem',
-        content: [
-          {
-            type: 'paragraph',
-            content: itemContent,
-          },
-        ],
-      });
-      inBulletList = true;
-      continue;
-    } else if (inBulletList && line.trim() === '') {
-      // Empty line closes the bullet list
-      content.push({
-        type: 'bulletList',
-        content: bulletListItems,
-      });
-      bulletListItems = [];
-      inBulletList = false;
-      continue;
-    } else if (inBulletList) {
-      // Non-bullet line closes the bullet list
-      content.push({
-        type: 'bulletList',
-        content: bulletListItems,
-      });
-      bulletListItems = [];
-      inBulletList = false;
-    }
-
-    // Handle headings (## Heading)
-    const headingMatch = line.match(/^(#+)\s+(.*)$/);
-    if (headingMatch) {
-      flushBulletList();
-      flushNumberedList();
-      const level = headingMatch[1].length;
-      const text = headingMatch[2];
-      content.push({
-        type: 'heading',
-        attrs: { level: level },
-        content: [{ type: 'text', text: text.trim() }],
-      });
-      continue;
-    }
-
-    // Handle bullet lists (- item)
-    const bulletMatch = line.match(/^-\s+(.*)$/);
-    if (bulletMatch) {
-      if (inNumberedList) flushNumberedList();
-      inBulletList = true;
-      bulletItems.push(parseInlineFormatting(bulletMatch[1]));
-      continue;
-    }
-
-    // Handle numbered lists (1. item, 2. item, etc)
-    const numberedMatch = line.match(/^\d+\.\s+(.*)$/);
-    if (numberedMatch) {
-      if (inBulletList) flushBulletList();
-      inNumberedList = true;
-      numberedItems.push(parseInlineFormatting(numberedMatch[1]));
-      continue;
-    }
-
-    // Handle horizontal rule (---)
-    if (line.match(/^-{3,}$/)) {
-      flushBulletList();
-      flushNumberedList();
-      content.push({ type: 'rule' });
-      continue;
-    }
-    // Handle paragraphs with bold (**text**), inline code (`code`), and links [text](url)
-    const paragraphContent = parseInlineFormatting(line);
-
-    // Empty line
-    if (line.trim().length === 0) {
-      // Flush lists on empty line
-      if (inBulletList) flushBulletList();
-      if (inNumberedList) flushNumberedList();
-      // Don't add empty paragraphs
-      continue;
-    }
-
-    // Regular paragraph with inline formatting
-    flushBulletList();
-    flushNumberedList();
-    const paragraphContent = parseInlineFormatting(line);
-    content.push({ type: 'paragraph', content: paragraphContent });
-  }
-
-  // Close any unclosed bullet list
-  if (inBulletList && bulletListItems.length > 0) {
-    content.push({
-      type: 'bulletList',
-      content: bulletListItems,
-    });
-  }
-
-  // Close any unclosed code block
-  if (inCodeBlock && codeBlockContent.length > 0) {
-    content.push({
-      type: 'codeBlock',
-      attrs: { language: codeBlockLang || 'plain' },
-      content: [{ type: 'text', text: codeBlockContent.join('\n') }],
-    });
-  }
-
-  // Flush any remaining lists
-  flushBulletList();
-  flushNumberedList();
-
-  return { type: 'doc', version: 1, content };
-}
-
-/**
  * Parse inline formatting (bold, code, links) in text
  */
 function parseInlineFormatting(text) {
@@ -348,6 +82,158 @@ function parseInlineFormatting(text) {
   }
 
   return content;
+}
+
+/**
+ * Convert Markdown to Atlassian Document Format (ADF)
+ * Supports: ## headings, **bold**, `inline code`, ```code blocks```, bullet lists, numbered lists, links
+ */
+function textToADF(text) {
+  if (!text) return { type: 'doc', version: 1, content: [] };
+  
+  const content = [];
+  const lines = String(text).split(/\r?\n/);
+
+  let inCodeBlock = false;
+  let codeBlockLang = '';
+  let codeBlockContent = [];
+  let inBulletList = false;
+  let bulletItems = [];
+  let inNumberedList = false;
+  let numberedItems = [];
+
+  const flushBulletList = () => {
+    if (bulletItems.length > 0) {
+      content.push({
+        type: 'bulletList',
+        content: bulletItems.map(item => ({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: item }]
+        }))
+      });
+      bulletItems = [];
+      inBulletList = false;
+    }
+  };
+
+  const flushNumberedList = () => {
+    if (numberedItems.length > 0) {
+      content.push({
+        type: 'orderedList',
+        content: numberedItems.map(item => ({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: item }]
+        }))
+      });
+      numberedItems = [];
+      inNumberedList = false;
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Handle code blocks ```language ... ```
+    const codeBlockMatch = line.match(/^```(\w*)?\s*$/);
+    
+    if (codeBlockMatch) {
+      if (inCodeBlock) {
+        // End of code block
+        content.push({
+          type: 'codeBlock',
+          attrs: { language: codeBlockLang || 'plain' },
+          content: [{ type: 'text', text: codeBlockContent.join('\n') }],
+        });
+        codeBlockContent = [];
+        inCodeBlock = false;
+        codeBlockLang = '';
+      } else {
+        // Start of code block
+        flushBulletList();
+        flushNumberedList();
+        inCodeBlock = true;
+        codeBlockLang = codeBlockMatch[1] || 'plain';
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeBlockContent.push(line);
+      continue;
+    }
+
+    // Handle markdown headings (## or ###)
+    const headingMatch = line.match(/^(#{2,3})\s+(.*)$/);
+    
+    if (headingMatch) {
+      flushBulletList();
+      flushNumberedList();
+      const level = headingMatch[1].length;
+      const text = headingMatch[2];
+      content.push({
+        type: 'heading',
+        attrs: { level: level },
+        content: [{ type: 'text', text: text.trim() }],
+      });
+      continue;
+    }
+
+    // Handle bullet lists (- item)
+    const bulletMatch = line.match(/^-\s+(.*)$/);
+    if (bulletMatch) {
+      if (inNumberedList) flushNumberedList();
+      inBulletList = true;
+      bulletItems.push(parseInlineFormatting(bulletMatch[1]));
+      continue;
+    }
+
+    // Handle numbered lists (1. item, 2. item, etc)
+    const numberedMatch = line.match(/^\d+\.\s+(.*)$/);
+    if (numberedMatch) {
+      if (inBulletList) flushBulletList();
+      inNumberedList = true;
+      numberedItems.push(parseInlineFormatting(numberedMatch[1]));
+      continue;
+    }
+
+    // Handle horizontal rule (---)
+    if (line.match(/^-{3,}$/)) {
+      flushBulletList();
+      flushNumberedList();
+      content.push({ type: 'rule' });
+      continue;
+    }
+
+    // Empty line
+    if (line.trim().length === 0) {
+      // Flush lists on empty line
+      if (inBulletList) flushBulletList();
+      if (inNumberedList) flushNumberedList();
+      // Don't add empty paragraphs
+      continue;
+    }
+
+    // Regular paragraph with inline formatting
+    flushBulletList();
+    flushNumberedList();
+    const paragraphContent = parseInlineFormatting(line);
+    content.push({ type: 'paragraph', content: paragraphContent });
+  }
+
+  // Close any unclosed code block
+  if (inCodeBlock && codeBlockContent.length > 0) {
+    content.push({
+      type: 'codeBlock',
+      attrs: { language: codeBlockLang || 'plain' },
+      content: [{ type: 'text', text: codeBlockContent.join('\n') }],
+    });
+  }
+
+  // Flush any remaining lists
+  flushBulletList();
+  flushNumberedList();
+
+  return { type: 'doc', version: 1, content };
 }
 
 /**

@@ -9,10 +9,37 @@ const JIRA_ISSUE_TYPE = process.env.JIRA_ISSUE_TYPE || 'Task';
 const jiraAuthHeader = `Basic ${Buffer.from(`${JIRA_USER}:${JIRA_API_TOKEN}`).toString('base64')}`;
 
 /**
+ * Unescape markdown characters that the AI might have escaped
+ */
+function unescapeMarkdown(text) {
+  if (!text) return text;
+  
+  return text
+    // Unescape backticks
+    .replace(/\\`/g, '`')
+    // Unescape asterisks
+    .replace(/\\\*/g, '*')
+    // Unescape underscores (but be careful not to break intentional escaping)
+    .replace(/\\_/g, '_')
+    // Unescape square brackets
+    .replace(/\\\[/g, '[')
+    .replace(/\\\]/g, ']')
+    // Unescape parentheses
+    .replace(/\\\(/g, '(')
+    .replace(/\\\)/g, ')')
+    // Unescape hash symbols
+    .replace(/\\#/g, '#')
+    // Unescape pipes
+    .replace(/\\\|/g, '|');
+}
+
+/**
  * Convert markdown text to Atlassian Document Format (ADF)
  * Supports: headings, bold, inline code, code blocks
  */
 function textToADF(text) {
+  // First, unescape any escaped markdown
+  text = unescapeMarkdown(text);
   const content = [];
   const lines = String(text || '').split(/\r?\n/);
 

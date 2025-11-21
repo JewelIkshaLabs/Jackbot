@@ -292,9 +292,79 @@ Work efficiently. Max ${MAX_ITERATIONS} iterations.`;
   }
   
   if (!rcaResult) {
-    throw new Error(`RCA investigation incomplete after ${MAX_ITERATIONS} iterations`);
+    console.log(`   [${workflowId}] ⚠️ Max iterations reached, generating best plausible RCA from investigation so far...`);
+    
+    // Extract the most relevant information from the conversation
+    const conversationSummary = messages
+      .filter(msg => msg.role === 'assistant' && msg.content)
+      .map(msg => msg.content)
+      .join('\n\n');
+    
+    // Try to extract any partial findings
+    let summary = 'Investigation reached maximum iterations. Based on the analysis performed:';
+    let rootCause = 'Root cause analysis incomplete. ';
+    let recommendedFix = 'Further investigation recommended. ';
+    let details = '';
+    
+    // Look for key patterns in the conversation
+    const summaryMatch = conversationSummary.match(/## Summary\s*\n([\s\S]*?)(?=##|$)/i);
+    const rootCauseMatch = conversationSummary.match(/(?:## Root Cause|root cause.*?:)\s*\n?([\s\S]*?)(?=##|\n\n|$)/i);
+    const recommendedFixMatch = conversationSummary.match(/(?:## Recommended Fix|recommended fix.*?:)\s*\n?([\s\S]*?)(?=##|\n\n|$)/i);
+    
+    if (summaryMatch) {
+      summary = summaryMatch[1].trim();
+    } else {
+      // Extract tool calls made to understand what was investigated
+      const toolCalls = messages.filter(msg => msg.role === 'tool').map(msg => {
+        try {
+          const parsed = JSON.parse(msg.content);
+          return parsed.action || parsed.tool || 'investigation';
+        } catch {
+          return 'investigation step';
+        }
+      });
+      
+      if (toolCalls.length > 0) {
+        summary += `\n\n**Investigation Steps Taken:**\n${toolCalls.slice(0, 10).map((call, i) => `${i + 1}. ${call}`).join('\n')}`;
+        if (toolCalls.length > 10) {
+          summary += `\n... and ${toolCalls.length - 10} more steps`;
+        }
+      }
+    }
+    
+    if (rootCauseMatch) {
+      rootCause = rootCauseMatch[1].trim().substring(0, 500);
+    } else {
+      rootCause += 'The investigation examined multiple aspects of the codebase but did not converge on a definitive root cause within the iteration limit.';
+    }
+    
+    if (recommendedFixMatch) {
+      recommendedFix = recommendedFixMatch[1].trim().substring(0, 500);
+    } else {
+      recommendedFix += 'Review the investigation details and consider:\n- Extending the analysis with more specific search terms\n- Manual code review of the identified areas\n- Additional logging or debugging';
+    }
+    
+    // Include a sample of the conversation for context
+    details = '**Note:** This RCA was incomplete due to reaching the maximum iteration limit.\n\n';
+    details += '**Investigation Context:**\n';
+    const lastFewMessages = messages.slice(-5).filter(msg => msg.role === 'assistant' && msg.content);
+    if (lastFewMessages.length > 0) {
+      details += lastFewMessages.map(msg => msg.content.substring(0, 500)).join('\n\n---\n\n');
+    }
+    
+    rcaResult = {
+      summary,
+      rootCause,
+      recommendedFix,
+      details,
+      fullResponse: `## Summary\n${summary}\n\n## Root Cause\n${rootCause}\n\n## Recommended Fix\n${recommendedFix}\n\n## Investigation Details\n${details}`,
+      incomplete: true, // Flag to indicate this is an incomplete analysis
+    };
+    
+    console.log(`   [${workflowId}] ⚠️ Returning best plausible RCA after ${iteration} iterations`);
+  } else {
+    console.log(`   [${workflowId}] ✅ RCA investigation completed in ${iteration} iterations`);
   }
   
-  console.log(`   [${workflowId}] ✅ RCA investigation completed in ${iteration} iterations`);
   return rcaResult;
 }

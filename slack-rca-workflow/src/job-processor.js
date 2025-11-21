@@ -212,11 +212,19 @@ export async function processSlackEvent(slackEvent, githubRepo, issueDescription
     const commentStart = Date.now();
     
     try {
+      // Add warning banner if RCA was incomplete
+      const warningBanner = rcaResult.incomplete 
+        ? `{panel:title=⚠️ Incomplete Analysis|borderStyle=dashed|borderColor=#ffab00|titleBGColor=#fff3cd|bgColor=#fff3cd}\n` +
+          `This RCA analysis reached the maximum iteration limit (30 iterations) and may be incomplete. ` +
+          `The findings below represent the best plausible analysis based on the investigation performed so far.\n` +
+          `{panel}\n\n`
+        : '';
+      
       await postJiraComment(issueKey, {
-        text: `## Automated RCA Analysis\n\n${rcaResult.summary}\n\n### Root Cause\n\n${rcaResult.rootCause}\n\n### Recommended Fix\n\n${rcaResult.recommendedFix}\n\n### Analysis Details\n\n${rcaResult.details}`,
+        text: `${warningBanner}## Automated RCA Analysis\n\n${rcaResult.summary}\n\n### Root Cause\n\n${rcaResult.rootCause}\n\n### Recommended Fix\n\n${rcaResult.recommendedFix}\n\n### Analysis Details\n\n${rcaResult.details}`,
       }, workflowId);
       const commentTime = ((Date.now() - commentStart) / 1000).toFixed(2);
-      console.log(`✅ [${workflowId}] RCA results posted to Jira`);
+      console.log(`✅ [${workflowId}] RCA results posted to Jira${rcaResult.incomplete ? ' (incomplete)' : ''}`);
       console.log(`   Ticket: ${issueKey}`);
       console.log(`   Comment time: ${commentTime}s`);
     } catch (error) {
@@ -238,10 +246,15 @@ export async function processSlackEvent(slackEvent, githubRepo, issueDescription
 
     // Final success message (non-blocking)
     try {
+      const successIcon = rcaResult.incomplete ? '⚠️' : '✅';
+      const statusText = rcaResult.incomplete 
+        ? 'RCA analysis completed (max iterations reached - results may be incomplete)' 
+        : 'RCA analysis completed';
+      
       await slackClient.chat.postMessage({
         channel,
         thread_ts: threadTs,
-        text: `✅ RCA analysis completed and posted to <${issueUrl}|${issueKey}>`,
+        text: `${successIcon} ${statusText} and posted to <${issueUrl}|${issueKey}>`,
       });
     } catch (slackError) {
       console.warn(`   [${workflowId}] Failed to post Slack success message (non-blocking):`, slackError.message);

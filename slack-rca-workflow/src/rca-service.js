@@ -69,25 +69,25 @@ const tools = [
     type: 'function',
     function: {
       name: 'finish',
-      description: 'Submit the final RCA report with root cause analysis, recommended fix, and code patches. Call this when investigation is complete.',
+      description: 'Submit the final RCA report with markdown formatting.',
       parameters: {
         type: 'object',
         properties: {
           summary: {
             type: 'string',
-            description: 'Brief 2-3 sentence summary of the issue and root cause',
+            description: 'Brief summary of the issue. Use **bold** for key terms and `backticks` for code.',
           },
           root_cause: {
             type: 'string',
-            description: 'Detailed explanation of the root cause(s) with specific code locations',
+            description: 'Root cause explanation with file locations. Use **bold**, `backticks` for files, and ```code blocks.',
           },
           recommended_fix: {
             type: 'string',
-            description: 'Specific recommendations for fixing the issue, including code examples or patches',
+            description: 'Recommended solutions with code examples in ```code blocks.',
           },
           analysis_details: {
             type: 'string',
-            description: 'Additional technical details, code locations, related issues, or implementation notes',
+            description: 'Optional additional technical details.',
           },
         },
         required: ['summary', 'root_cause', 'recommended_fix'],
@@ -182,30 +182,26 @@ export async function performRCA({ githubRepo, issueDescription, slackMessage, r
   const isNewModel = model.includes('gpt-4o') || model.includes('gpt-5') || model.includes('o1');
   
   // Initial system message
-  const systemMessage = `You are a senior software engineer performing a Root Cause Analysis (RCA) on a specific issue.
+  const systemMessage = `You are a senior software engineer performing Root Cause Analysis.
 
+Issue: ${issueDescription}
 Repository: ${githubRepo}
-Issue Reported: ${issueDescription}
-Full Slack Message: ${slackMessage}
+Relevant files: ${relevantFiles.slice(0, 10).join(', ')}${relevantFiles.length > 10 ? '...' : ''}
 
-Relevant files identified: ${relevantFiles.slice(0, 10).join(', ')}${relevantFiles.length > 10 ? '...' : ''}
+Tools available: read_file, exec, list_directory, finish
 
-Your task is to investigate the codebase iteratively to find the root cause of the issue. You have access to tools that let you:
-- Read files (read_file)
-- Execute commands like grep, ls, cat (exec)
-- List directories (list_directory)
-- Submit final RCA report (finish)
+Instructions:
+1. Investigate the codebase to find the root cause
+2. Read relevant files and search for patterns
+3. When done, call 'finish' with formatted report
 
-Investigation approach:
-1. Start by exploring the codebase structure
-2. Read relevant files based on the issue description
-3. Search for error patterns, related code, or configuration issues
-4. Trace through the code to understand the flow
-5. Identify the root cause
-6. Propose a fix with code examples
-7. Call 'finish' with your RCA report
+Format your report with markdown:
+- Use **bold** for key terms and impacts
+- Use \`backticks\` for file paths and code references  
+- Use \`\`\`language for code blocks
+- Include file locations and line numbers
 
-Work systematically and use the tools to gather information. Maximum ${MAX_ITERATIONS} iterations.`;
+Work efficiently. Max ${MAX_ITERATIONS} iterations.`;
 
   const messages = [
     {

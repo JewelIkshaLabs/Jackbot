@@ -9,16 +9,118 @@ const JIRA_ISSUE_TYPE = process.env.JIRA_ISSUE_TYPE || 'Task';
 const jiraAuthHeader = `Basic ${Buffer.from(`${JIRA_USER}:${JIRA_API_TOKEN}`).toString('base64')}`;
 
 /**
- * Convert plain text to Atlassian Document Format (ADF)
+ * Convert markdown text to Atlassian Document Format (ADF)
+ * Supports: headings, bold, inline code, code blocks
  */
 function textToADF(text) {
-  const paragraphs = String(text || '').split(/\r?\n/);
-  const content = paragraphs.map((p) => {
-    if (p.length === 0) {
-      return { type: 'paragraph', content: [] };
+  const content = [];
+  const lines = String(text || '').split(/\r?\n/);
+
+  let inCodeBlock = false;
+  let codeBlockLang = '';
+  let codeBlockContent = [];
+
+  for (const line of lines) {
+    // Handle code blocks (```language or ```)
+    const codeBlockMatch = line.match(/^```(\w*)\s*$/);
+    if (codeBlockMatch) {
+      if (inCodeBlock) {
+        // End of code block
+        content.push({
+          type: 'codeBlock',
+          attrs: { language: codeBlockLang || 'plain' },
+          content: [{ type: 'text', text: codeBlockContent.join('\n') }],
+        });
+        codeBlockContent = [];
+        inCodeBlock = false;
+        codeBlockLang = '';
+      } else {
+        // Start of code block
+        inCodeBlock = true;
+        codeBlockLang = codeBlockMatch[1] || 'plain';
+      }
+      continue;
     }
-    return { type: 'paragraph', content: [{ type: 'text', text: p }] };
-  });
+
+    if (inCodeBlock) {
+      codeBlockContent.push(line);
+      continue;
+    }
+
+    // Handle headings (## Heading)
+    const headingMatch = line.match(/^(#+)\s+(.*)$/);
+    if (headingMatch) {
+      const level = Math.min(headingMatch[1].length, 6); // Max heading level 6
+      content.push({
+        type: 'heading',
+        attrs: { level: level },
+        content: [{ type: 'text', text: headingMatch[2].trim() }],
+      });
+      continue;
+    }
+
+    // Handle paragraphs with bold (**text**) and inline code (`code`)
+    const paragraphContent = [];
+    let remainingText = line;
+
+    // Regex to find bold (**text**) or inline code (`code`)
+    const regex = /(\*\*([^*]+?)\*\*)|(`([^`]+?)`)/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(remainingText)) !== null) {
+      // Add text before the match
+      if (match.index > lastIndex) {
+        paragraphContent.push({ 
+          type: 'text', 
+          text: remainingText.substring(lastIndex, match.index) 
+        });
+      }
+
+      if (match[2]) { 
+        // Bold match
+        paragraphContent.push({ 
+          type: 'text', 
+          text: match[2], 
+          marks: [{ type: 'strong' }] 
+        });
+      } else if (match[4]) { 
+        // Inline code match
+        paragraphContent.push({ 
+          type: 'text', 
+          text: match[4], 
+          marks: [{ type: 'code' }] 
+        });
+      }
+      lastIndex = regex.lastIndex;
+    }
+
+    // Add any remaining text after the last match
+    if (lastIndex < remainingText.length) {
+      paragraphContent.push({ 
+        type: 'text', 
+        text: remainingText.substring(lastIndex) 
+      });
+    }
+
+    if (paragraphContent.length > 0) {
+      content.push({ type: 'paragraph', content: paragraphContent });
+    } else if (line.length === 0) {
+      content.push({ type: 'paragraph', content: [] }); // Empty paragraph for blank lines
+    } else {
+      content.push({ type: 'paragraph', content: [{ type: 'text', text: line }] }); // Fallback
+    }
+  }
+
+  // Close any unclosed code block
+  if (inCodeBlock && codeBlockContent.length > 0) {
+    content.push({
+      type: 'codeBlock',
+      attrs: { language: codeBlockLang || 'plain' },
+      content: [{ type: 'text', text: codeBlockContent.join('\n') }],
+    });
+  }
+
   return { type: 'doc', version: 1, content };
 }
 

@@ -24,7 +24,7 @@ const tools = [
         properties: {
           file_path: {
             type: 'string',
-            description: 'Relative path to the file from repository root (e.g., "app/controllers/application_controller.rb" or "app/models/user.rb")',
+            description: 'Relative path to the file from repository root (e.g., "ad-portal-api/app/controllers/application_controller.rb" or "ad-portal-api/app/models/user.rb")',
           },
         },
         required: ['file_path'],

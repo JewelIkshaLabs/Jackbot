@@ -23,6 +23,12 @@ docker build -t slack-rca-workflow:latest .
 
 ### Step 3: Start Server
 
+
+# If the container is alraedy running
+
+```bash
+docker stop slack-rca-bot 2>/dev/null; docker rm slack-rca-bot 2>/dev/null;
+```
 ```bash
 # Using docker-compose (recommended)
 docker-compose up -d
@@ -30,9 +36,15 @@ docker-compose up -d
 # OR using docker run
 docker run -d \
   --name slack-rca-bot \
-  -p 3000:8000 \
+  -p 8000:8000 \
   --env-file .env \
   slack-rca-workflow:latest
+```
+
+## To show docker logs
+
+```bash
+docker logs -f --timestamps slack-rca-bot
 ```
 
 ### Step 4: Verify Server is Running

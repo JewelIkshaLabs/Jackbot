@@ -35,7 +35,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'exec',
-      description: 'Execute shell commands like ls, grep, cat, find, etc. Useful for exploring directory structure, searching for files, or reading files. Has 10 second timeout. You can traverse the directory structure using the understanding of Ruby on Rails. We are following the Rails conventions. e.g. if you want to find all the controllers, you can use "find app/controllers/ -name \'application_controller.rb\'"',
+      description: 'Execute shell commands like ls, grep, cat, find, etc. Useful for exploring directory structure, searching for files, or reading files. Has 10 second timeout. You can traverse the directory structure using the understanding of Ruby on Rails. We are following the Rails conventions. e.g. if you want to find all the controllers, you can use "find ad-portal-api/app/controllers/ -name \'application_controller.rb\'"',
       parameters: {
         type: 'object',
         properties: {
@@ -268,7 +268,9 @@ Investigation approach:
    - Integration points
 6. Call 'finish' with your test cases report
 
-Work systematically and use the tools to gather information. Maximum ${MAX_ITERATIONS} iterations.`;
+Tools available: read_file, exec, list_directory, finish
+
+Work efficiently. Maximum ${MAX_ITERATIONS} iterations.`;
 
   const messages = [
     {

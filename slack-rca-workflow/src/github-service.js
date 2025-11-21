@@ -6,7 +6,7 @@ import path from 'path';
 const execAsync = promisify(exec);
 
 // Repository path (cloned during Docker build)
-const REPO_PATH = '/app/repo';
+const REPO_PATH = process.env.GITHUB_REPO_PATH || '/app/repo';
 
 /**
  * Check if repository exists (cloned during Docker build)

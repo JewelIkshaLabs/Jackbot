@@ -1,9 +1,8 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import { webhookHandler } from './webhook.js';
+// Load environment variables FIRST before any other imports
+import 'dotenv/config';
 
-// Load environment variables
-dotenv.config();
+import express from 'express';
+import { webhookHandler } from './webhook.js';
 
 const app = express();
 const PORT = process.env.PORT || 8000;

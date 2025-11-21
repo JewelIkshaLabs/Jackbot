@@ -184,22 +184,78 @@ export async function performRCA({ githubRepo, issueDescription, slackMessage, r
   // Initial system message
   const systemMessage = `You are a senior software engineer performing Root Cause Analysis.
 
-Issue: ${issueDescription}
-Repository: ${githubRepo}
-Relevant files: ${relevantFiles.slice(0, 10).join(', ')}${relevantFiles.length > 10 ? '...' : ''}
+**Issue:** ${issueDescription}
+**Repository:** ${githubRepo}
+**Relevant Files:** ${relevantFiles.slice(0, 10).join(', ')}${relevantFiles.length > 10 ? '...' : ''}
 
-Tools available: read_file, exec, list_directory, finish
+**Tools:** read_file, exec, list_directory, finish
 
-Instructions:
-1. Investigate the codebase to find the root cause
-2. Read relevant files and search for patterns
-3. When done, call 'finish' with formatted report
+**Instructions:**
+1. Investigate the codebase systematically
+2. Identify the root cause with evidence
+3. Call 'finish' with a CONCISE, well-structured report
 
-Format your report with markdown:
-- Use **bold** for key terms and impacts
-- Use \`backticks\` for file paths and code references  
-- Use \`\`\`language for code blocks
-- Include file locations and line numbers
+**CRITICAL FORMATTING RULES:**
+
+**summary:** 2-3 sentences maximum. Be direct and specific.
+
+**root_cause:** 
+- Start with a clear 1-sentence explanation
+- **File Location:** \`path/to/file.ext:line-numbers\`
+- **Code Snippet:** Use \`\`\`language blocks (max 15 lines)
+- **Issue:** Bullet points explaining what's wrong
+- **Expected:** What should happen instead
+
+**recommended_fix:**
+- Numbered list of specific changes needed
+- Include code examples in \`\`\`language blocks if helpful
+- Keep examples under 10 lines
+
+**analysis_details:** (optional)
+- Only include if there are important caveats or edge cases
+- Use bullet points
+- Be brief
+
+**Formatting:**
+- Use \`backticks\` for inline code, variables, file paths
+- Use \`\`\`language for code blocks (specify language)
+- Use **bold** for emphasis on key terms
+- Use bullet points (-) and numbered lists (#)
+- NO lengthy explanations - be concise and technical
+- Include specific line numbers when referencing code
+
+**Example of concise formatting:**
+
+summary: "The user creation fails because validation logic incorrectly rejects valid email formats containing subdomains."
+
+root_cause: "Email validation regex in UserValidator only accepts single-domain emails.
+
+**File Location:** \`app/validators/user_validator.rb:23-25\`
+
+**Code Snippet:**
+\`\`\`ruby
+def validate_email(email)
+  email.match?(/^[\\w+\\-.]+@[a-z\\d\\-]+(\\.[a-z]+)*\\.[a-z]+$/i)
+end
+\`\`\`
+
+**Issue:**
+- Regex pattern \`[a-z\\d\\-]+\` before the first dot doesn't allow for subdomains
+- Fails on valid emails like \`user@mail.company.com\`
+- Only works for single-level domains like \`user@company.com\`
+
+**Expected:** Accept all RFC-compliant email formats including subdomains."
+
+recommended_fix: "
+1. Update regex pattern to allow multiple subdomain levels
+2. Add test cases for subdomain email formats
+
+\`\`\`ruby
+def validate_email(email)
+  email.match?(/^[\\w+\\-.]+@[a-z\\d\\-]+(\\.[a-z\\d\\-]+)*\\.[a-z]+$/i)
+end
+\`\`\`
+"
 
 Work efficiently. Max ${MAX_ITERATIONS} iterations.`;
 
@@ -248,12 +304,14 @@ Work efficiently. Max ${MAX_ITERATIONS} iterations.`;
           // If finish tool was called, extract the result
           if (toolCall.function.name === 'finish') {
             const finishData = JSON.parse(toolResult.content);
+            const detailsSection = finishData.analysis_details ? `\n\n## Additional Details\n\n${finishData.analysis_details}` : '';
+            
             rcaResult = {
               summary: finishData.summary,
               rootCause: finishData.root_cause,
               recommendedFix: finishData.recommended_fix,
               details: finishData.analysis_details || '',
-              fullResponse: `## Summary\n${finishData.summary}\n\n## Root Cause\n${finishData.root_cause}\n\n## Recommended Fix\n${finishData.recommended_fix}\n\n## Analysis Details\n${finishData.analysis_details || ''}`,
+              fullResponse: `## Root Cause Analysis\n\n### Summary\n\n${finishData.summary}\n\n### Root Cause\n\n${finishData.root_cause}\n\n### Recommended Fix\n\n${finishData.recommended_fix}${detailsSection}`,
             };
           }
         }
@@ -292,9 +350,79 @@ Work efficiently. Max ${MAX_ITERATIONS} iterations.`;
   }
   
   if (!rcaResult) {
-    throw new Error(`RCA investigation incomplete after ${MAX_ITERATIONS} iterations`);
+    console.log(`   [${workflowId}] ⚠️ Max iterations reached, generating best plausible RCA from investigation so far...`);
+    
+    // Extract the most relevant information from the conversation
+    const conversationSummary = messages
+      .filter(msg => msg.role === 'assistant' && msg.content)
+      .map(msg => msg.content)
+      .join('\n\n');
+    
+    // Try to extract any partial findings
+    let summary = 'Investigation reached maximum iterations. Based on the analysis performed:';
+    let rootCause = 'Root cause analysis incomplete. ';
+    let recommendedFix = 'Further investigation recommended. ';
+    let details = '';
+    
+    // Look for key patterns in the conversation
+    const summaryMatch = conversationSummary.match(/## Summary\s*\n([\s\S]*?)(?=##|$)/i);
+    const rootCauseMatch = conversationSummary.match(/(?:## Root Cause|root cause.*?:)\s*\n?([\s\S]*?)(?=##|\n\n|$)/i);
+    const recommendedFixMatch = conversationSummary.match(/(?:## Recommended Fix|recommended fix.*?:)\s*\n?([\s\S]*?)(?=##|\n\n|$)/i);
+    
+    if (summaryMatch) {
+      summary = summaryMatch[1].trim();
+    } else {
+      // Extract tool calls made to understand what was investigated
+      const toolCalls = messages.filter(msg => msg.role === 'tool').map(msg => {
+        try {
+          const parsed = JSON.parse(msg.content);
+          return parsed.action || parsed.tool || 'investigation';
+        } catch {
+          return 'investigation step';
+        }
+      });
+      
+      if (toolCalls.length > 0) {
+        summary += `\n\n**Investigation Steps Taken:**\n${toolCalls.slice(0, 10).map((call, i) => `${i + 1}. ${call}`).join('\n')}`;
+        if (toolCalls.length > 10) {
+          summary += `\n... and ${toolCalls.length - 10} more steps`;
+        }
+      }
+    }
+    
+    if (rootCauseMatch) {
+      rootCause = rootCauseMatch[1].trim().substring(0, 500);
+    } else {
+      rootCause += 'The investigation examined multiple aspects of the codebase but did not converge on a definitive root cause within the iteration limit.';
+    }
+    
+    if (recommendedFixMatch) {
+      recommendedFix = recommendedFixMatch[1].trim().substring(0, 500);
+    } else {
+      recommendedFix += 'Review the investigation details and consider:\n- Extending the analysis with more specific search terms\n- Manual code review of the identified areas\n- Additional logging or debugging';
+    }
+    
+    // Include a sample of the conversation for context
+    details = '**Note:** This RCA was incomplete due to reaching the maximum iteration limit.\n\n';
+    details += '**Investigation Context:**\n';
+    const lastFewMessages = messages.slice(-5).filter(msg => msg.role === 'assistant' && msg.content);
+    if (lastFewMessages.length > 0) {
+      details += lastFewMessages.map(msg => msg.content.substring(0, 500)).join('\n\n---\n\n');
+    }
+    
+    rcaResult = {
+      summary,
+      rootCause,
+      recommendedFix,
+      details,
+      fullResponse: `## Root Cause Analysis\n\n### Summary\n\n${summary}\n\n### Root Cause\n\n${rootCause}\n\n### Recommended Fix\n\n${recommendedFix}\n\n### Investigation Notes\n\n${details}`,
+      incomplete: true, // Flag to indicate this is an incomplete analysis
+    };
+    
+    console.log(`   [${workflowId}] ⚠️ Returning best plausible RCA after ${iteration} iterations`);
+  } else {
+    console.log(`   [${workflowId}] ✅ RCA investigation completed in ${iteration} iterations`);
   }
   
-  console.log(`   [${workflowId}] ✅ RCA investigation completed in ${iteration} iterations`);
   return rcaResult;
 }

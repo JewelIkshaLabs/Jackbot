@@ -18,13 +18,13 @@ const tools = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read the contents of a source code file, test file, config file, or spec file. Returns the full file content.',
+      description: 'Read the contents of a source code file or config file. Returns the full file content.',
       parameters: {
         type: 'object',
         properties: {
           file_path: {
             type: 'string',
-            description: 'Relative path to the file from repository root (e.g., "src/auth/login.js" or "spec/models/user_spec.rb")',
+            description: 'Relative path to the file from repository root (e.g., "src/auth/login.js")',
           },
         },
         required: ['file_path'],
@@ -35,13 +35,13 @@ const tools = [
     type: 'function',
     function: {
       name: 'exec',
-      description: 'Execute shell commands like ls, grep, cat, find, etc. Useful for exploring directory structure, searching for test files, or reading files. Has 10 second timeout.',
+      description: 'Execute shell commands like ls, grep, cat, find, etc. Useful for exploring directory structure, searching for files, or reading files. Has 10 second timeout. You can traverse the directory structure using the understanding of Ruby on Rails. We are following the Rails conventions. e.g. if you want to find all the controllers, you can use "find app/controllers/ -name \'application_controller.rb\'"',
       parameters: {
         type: 'object',
         properties: {
           command: {
             type: 'string',
-            description: 'Shell command to execute (e.g., "find spec/ -name \'*_spec.rb\'", "grep -r \"describe\" test/", "cat package.json")',
+            description: 'Shell command to execute (e.g., "find app/ -name \'*.rb\'", "grep -r \"describe\" app/", "cat package.json")',
           },
         },
         required: ['command'],
@@ -58,7 +58,7 @@ const tools = [
         properties: {
           dir_path: {
             type: 'string',
-            description: 'Relative path to directory from repository root (e.g., "spec/", "test/", or "src/controllers/")',
+            description: 'Relative path to directory from repository root (e.g., "app/controllers/")',
           },
         },
         required: ['dir_path'],
@@ -69,7 +69,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'finish',
-      description: 'Submit the final test cases report with comprehensive test cases for methods, controller actions, sidekiq jobs, and business workflows. Call this when test case generation is complete. Ensure that the files mentioned here are actuall present in the codebase.',
+      description: 'Submit the final test cases report with comprehensive test cases for methods, controller actions, sidekiq jobs, and business workflows. Call this when test case generation is complete. Ensure that the files mentioned here are actually present in the codebase.',
       parameters: {
         type: 'object',
         properties: {
@@ -240,29 +240,28 @@ Relevant files identified: ${relevantFiles.slice(0, 20).join(', ')}${relevantFil
 
 Your task is to generate comprehensive test cases that validate:
 1. The root cause has been addressed
-2. The recommended fix works correctly
-3. Related functionality is not broken
-4. Edge cases and error scenarios are covered
+2. Related functionality is not broken
+3. Edge cases and error scenarios are covered
+
+IMPORTANT: Do not include test cases for all files that you have read. Include test cases only for the strictly relevant files.
 
 Test cases should cover:
 - Unit tests for methods/functions
 - Integration tests for workflows
 - Controller action tests (for web frameworks)
 - Background job tests (Sidekiq, Celery, etc.)
-- End-to-end workflow tests
 - Error handling and edge cases
 
 You have access to tools that let you:
-- Read files (read_file) - to understand code structure and existing tests
-- Execute commands (exec) - to find test files, explore test structure
+- Read files (read_file) - to understand code structure
+- Execute commands (exec) - to find business logic files
 - List directories (list_directory) - to understand project structure
 
 Investigation approach:
-1. Explore the codebase structure, especially test directories (spec/, test/, __tests__/, etc.)
+1. Explore the codebase structure
 2. Read relevant source files to understand the code being fixed
-3. Check existing test files to understand testing patterns and frameworks used
-4. Identify all methods, controllers, jobs, and workflows that need testing
-5. Generate comprehensive test cases covering:
+3. Identify all methods, controllers, jobs, and workflows that need testing
+4. Generate comprehensive test cases covering:
    - Happy path scenarios
    - Edge cases
    - Error conditions

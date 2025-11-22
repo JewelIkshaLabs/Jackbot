@@ -18,13 +18,13 @@ const tools = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read the contents of a source code file, config file, or log file. Returns the full file content.',
+      description: 'Read the contents of a source code file or config file. Returns the full file content.',
       parameters: {
         type: 'object',
         properties: {
           file_path: {
             type: 'string',
-            description: 'Relative path to the file from repository root (e.g., "src/auth/login.js" or "backend/src/api/users.py")',
+            description: 'Relative path to the file from repository root (e.g., "ad-portal-api/app/controllers/application_controller.rb" or "ad-portal-api/app/models/user.rb")',
           },
         },
         required: ['file_path'],
@@ -35,7 +35,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'exec',
-      description: 'Execute shell commands like ls, grep, cat, find, etc. Useful for exploring directory structure, searching for patterns, or reading files. Has 10 second timeout.',
+      description: 'Execute shell commands like ls, grep, cat, find, etc. Useful for exploring directory structure, searching for patterns, or reading files. Has 10 second timeout. The app is built using Ruby on Rails. The Rails conventions are followed.',
       parameters: {
         type: 'object',
         properties: {
